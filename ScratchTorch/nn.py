@@ -148,6 +148,9 @@ class Conv2d:
         # applying relu activation function to the layer.
         return output_tensor.relu()
     
+    def parameters(self):
+        return np.stack(self.layer.data, self.b.data)
+    
 class Flatten:
     def __call__(self,x:Tensor):
         # checking if the input is 4d:

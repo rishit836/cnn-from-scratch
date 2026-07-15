@@ -147,23 +147,10 @@ class Tensor:
             
         out = Tensor(self.data+other.data, _op="+",_children=(self,other))
         
-        # unbroadcasting the broadcast done by numpy in forward pass 
-        def unbroadcast(out_grad, data_shape):
-            # if the data has rows then we collapse the rows into one row by adding all the rows in horizontal axis.
-            while len(out_grad.shape) > len(data_shape):
-                out_grad = out_grad.sum(axis=0)
-
-            # incase the desired data shape has 1 dimension we collapse that dimension thus unbroadcasting the array.
-            for i, dim in enumerate(data_shape):
-                if dim == 1:
-                    out_grad = out_grad.sum(axis=i, keepdims=True)
-                    
-            return out_grad
-        
         def _backward():
             # derivative of addition is 1, we just need to convert the shape of the gradient into desired shape
-            self.grad += unbroadcast(out.grad, self.data.shape)
-            other.grad += unbroadcast(out.grad, other.data.shape)
+            self.grad += Tensor.unbroadcast(out.grad, self.data.shape)
+            other.grad += Tensor.unbroadcast(out.grad, other.data.shape)
             
         out._backward = _backward
         
@@ -196,25 +183,12 @@ class Tensor:
         
         out =Tensor(self.data*other.data, _op="*", _children=(self,other))
         
-        # unbroadcasting the broadcast done by numpy in forward pass 
-        def unbroadcast(out_grad, data_shape):
-            # if the data has rows then we collapse the rows into one row by adding all the rows in horizontal axis.
-            while len(out_grad.shape) > len(data_shape):
-                out_grad = out_grad.sum(axis=0)
-
-            # incase the desired data shape has 1 dimension we collapse that dimension thus unbroadcasting the array.
-            for i, dim in enumerate(data_shape):
-                if dim == 1:
-                    out_grad = out_grad.sum(axis=i, keepdims=True)
-                    
-            return out_grad
-        
         
         def _backward():
             # derivative is the other value in the multiplication
             # we just convert the shape back to desired shape of the gradient
-            self.grad += unbroadcast(other.data * out.grad,self.data.shape)
-            other.grad += unbroadcast(self.data * out.grad,other.data.shape)
+            self.grad += Tensor.unbroadcast(other.data * out.grad,self.data.shape)
+            other.grad += Tensor.unbroadcast(self.data * out.grad,other.data.shape)
         
         out._backward = _backward
         
@@ -360,11 +334,144 @@ class Tensor:
     def __matmul__(self, other):
         # forward pass relies on numpy for faster compute.
         out = Tensor(self.data@other.data,_op="@", _children=(self,other))
+        
+       
         def _backward():
             # relying on wikipedia formula for derivative idk about this one. :-)
-            self.grad += out.grad @ other.data.T
-            other.grad += self.data.T @ out.grad
+            """
+            applying rule based for 
+            1) vector @ vector
+            2) matrix @ vector
+            3) vector @ matrix
+            4) matrix @ matrix
+            5) batched matrix @ vector
+            6) vector @ batched matrix
+            7) batched matrix @ matrix
+            8) matrix @ batched matrix
+            9) batched matrix @ batched matrix
+            """
             
+            # vector @ vector
+            if self.data.ndim == 1 and other.data.ndim == 1:
+                self.grad += Tensor.unbroadcast(out.grad * other.data, self.data.shape)
+                other.grad += Tensor.unbroadcast(out.grad * self.data, other.data.shape)
+                
+            # matrix @ vector
+            elif self.data.ndim == 2 and other.data.ndim == 1:
+                self.grad += Tensor.unbroadcast(np.outer(out.grad, other.data), self.data.shape)
+                other.grad += Tensor.unbroadcast(self.data.T @ out.grad, other.data.shape)
+                
+            # vector @ matrix
+            elif self.data.ndim == 1 and other.data.ndim ==2:
+                self.grad += Tensor.unbroadcast(out.grad @ other.data.T, self.data.shape)
+                other.grad += Tensor.unbroadcast(np.outer(self.data,out.grad),other.data.shape)
+                
+            # matrix @ matrix
+            elif self.data.ndim == 2 and other.data.ndim ==2:
+                self.grad += Tensor.unbroadcast(out.grad @ other.data.T,self.data.shape)
+                other.grad += Tensor.unbroadcast(self.data.T @ out.grad,other.data.shape)
+                
+            # batched matrix @ Vector
+            elif self.data.ndim >= 3 and other.data.ndim == 1:
+
+                grad_self = out.grad[..., :, None] * other.data
+
+                grad_other = np.sum(
+                    np.swapaxes(self.data, -1, -2) @ out.grad[..., None],
+                    axis=tuple(range(self.data.ndim - 2))
+                ).squeeze(-1)
+
+                self.grad += Tensor.unbroadcast(
+                    grad_self,
+                    self.shape
+                )
+
+                other.grad += Tensor.unbroadcast(
+                    grad_other,
+                    other.shape
+                )
+            
+            # Vector @ Batched Matrix
+            elif self.data.ndim == 1 and other.data.ndim >= 3:
+
+                grad_self = np.sum(
+                    out.grad[..., None, :] @ np.swapaxes(other.data, -1, -2),
+                    axis=tuple(range(other.data.ndim - 2))
+                ).squeeze(-2)
+
+                grad_other = (
+                    self.data[..., None] *
+                    out.grad[..., None, :]
+                )
+
+                self.grad += Tensor.unbroadcast(
+                    grad_self,
+                    self.shape
+                )
+
+                other.grad += Tensor.unbroadcast(
+                    grad_other,
+                    other.shape
+                )
+            
+            # batched matrix @ matrix
+            elif self.data.ndim >= 3 and other.data.ndim == 2:
+
+                grad_self = out.grad @ other.data.T
+
+                grad_other = np.sum(
+                    np.swapaxes(self.data, -1, -2) @ out.grad,
+                    axis=tuple(range(self.data.ndim - 2))
+                )
+
+                self.grad += Tensor.unbroadcast(
+                    grad_self,
+                    self.shape
+                )
+
+                other.grad += Tensor.unbroadcast(
+                    grad_other,
+                    other.shape
+                )
+            
+            # matrix @ batched matrix
+            elif self.data.ndim == 2 and other.data.ndim >= 3:
+
+                grad_self = np.sum(
+                    out.grad @ np.swapaxes(other.data, -1, -2),
+                    axis=tuple(range(other.data.ndim - 2))
+                )
+
+                grad_other = self.data.T @ out.grad
+
+                self.grad += Tensor.unbroadcast(
+                    grad_self,
+                    self.shape
+                )
+
+                other.grad += Tensor.unbroadcast(
+                    grad_other,
+                    other.shape
+                )
+                
+            # batched matrix @ batched matrix
+            elif self.data.ndim >= 3 and other.data.ndim >= 3:
+
+                self.grad += Tensor.unbroadcast(
+                    out.grad @ np.swapaxes(other.data, -1, -2),
+                    self.shape
+                )
+
+                other.grad += Tensor.unbroadcast(
+                    np.swapaxes(self.data, -1, -2) @ out.grad,
+                    other.shape
+                )
+
+            else:
+                raise NotImplementedError(
+                    f"Unsupported matmul shapes: {self.shape} @ {other.shape}"
+                )
+                
         out._backward = _backward
         
         return out
@@ -387,7 +494,7 @@ class Tensor:
         self.grad = np.ones_like(self.data,dtype=np.float64)
         build(self)
         
-        for node in reversed(topo):
+        for idx,node in enumerate(reversed(topo)):
             node._backward()
     
     
@@ -604,7 +711,7 @@ class Tensor:
             out_h = H - k + 1
             out_w = W - k + 1
             
-            # row tensor stack.
+            """# row tensor stack.
             rows = []
             
             for i in range(out_h):
@@ -623,7 +730,14 @@ class Tensor:
                 row_tensor = Tensor.stack(cols)
                 rows.append(row_tensor)
             # stacking the tensors of the rows into one.
-            output = Tensor.stack(rows,0)
+            output = Tensor.stack(rows,0)"""
+            
+            # using im2col to convert multiple dot products into single matrix multiplication (halves the time for execution)
+            cols = self.im2col(k)
+            w = kernel.reshape(-1)
+            out = cols @ w
+            output = out.reshape((out_h,out_w))
+            
             
         return output
     
@@ -643,9 +757,53 @@ class Tensor:
         return img_data
     
 
+    def im2col(self,kernel_size):
+        # getting the shape of the input tensor
+        H,W = self.shape
+        
+        # determing the output height and width.
+        out_h = H - kernel_size + 1
+        out_w = W - kernel_size + 1
+        
+        cols = []
+        
+        for i in range(out_h):
+            for j in range(out_w):
+                
+                patch = self[i:i+kernel_size, j:j+kernel_size]
+                
+                cols.append(patch.reshape(-1))
+                
+        return Tensor.stack(cols)
+    
+    
+    def im2col_numpy(self,kernel_size):
+        # getting the shape of the input tensor
+        H,W = self.shape
+        
+        # determing the output height and width.
+        out_h = H - kernel_size + 1
+        out_w = W - kernel_size + 1
+        
+        
+        windows = np.lib.stride_tricks.sliding_window_view(self.data,(kernel_size,kernel_size))
+        
+        
+    @staticmethod
+    def unbroadcast(out_grad, data_shape):
+        # if the data has rows then we collapse the rows into one row by adding all the rows in horizontal axis.
+        while len(out_grad.shape) > len(data_shape):
+            out_grad = out_grad.sum(axis=0)
+
+        # incase the desired data shape has 1 dimension we collapse that dimension thus unbroadcasting the array.
+        for i, dim in enumerate(data_shape):
+            if dim == 1:
+                out_grad = out_grad.sum(axis=i, keepdims=True)
+                
+        return out_grad
     
         
-             
+        
     
 if __name__ == "__main__":
     
