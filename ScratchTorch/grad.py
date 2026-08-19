@@ -133,7 +133,6 @@ class Tensor:
     
     # tensor + scalar
     def __add__(self, other):
-    
         """
         the addition method for adding scalars and tensors together
         """
