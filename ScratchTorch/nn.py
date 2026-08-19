@@ -50,13 +50,32 @@ class MLP_value:
         return [p for layer in self.layers for p in layer.parameters()]
     
 class Dense:
-    def __init__(self, nin, nout):
-        # LeCunn Initialization in the Layer Class
-        self.W = Tensor(np.random.randn(nin, nout) * np.sqrt(1 / nin))
-        self.b = Tensor(np.zeros((1, nout)))
-        self.activation = 'tanh'
+    def __init__(self, nin=None, nout=None):
+
+        # incase the function is passed only one input
+        if nout is None:
+            nout = nin
+            nin = None
+
+        self.nout = nout
+        # will be initializing the weight layer 
+        self.W = None
+        self.b = None
+        self.activation = "tanh"
+
+        # incase the nin is defined we just build the layer then and there
+        if nin is not None:
+            self.build(nin)
 
     def __call__(self, x):
+
+        if self.W is None:
+            self.build(x.shape[-1])
+
+        if x.shape[-1] != self.W.shape[0]:
+            raise ValueError(f"Dense expected {self.W.shape[0]} features, got {x.shape[-1]}")
+
+
         # y = wx + b
         y = x @ self.W + self.b
         if self.activation == 'softmax':
@@ -65,11 +84,19 @@ class Dense:
             return y.tanh()
     
     def parameters(self):
+        if self.W is None:
+            raise ValueError(f"please compile the model.")
         return [self.W,self.b]
     
     def set_activation_function(self,activation):
         self.activation = activation
         return self
+
+    def build(self,nin):
+        # LeCunn Initialization in the Layer Class
+        self.W = Tensor(np.random.randn(nin,self.nout))
+        self.b = Tensor(np.zeros((1,self.nout)))
+
     
     
 
@@ -125,6 +152,7 @@ class ClassifcationNN:
         return params
     
 # Convulution Neural Network.
+
 # convultuion layer
 class Conv2d:
     def __init__(self,in_channels,out_channels, kernel_size):
@@ -150,6 +178,8 @@ class Conv2d:
     
     def parameters(self):
         return np.stack(self.layer.data, self.b.data)
+
+    
     
 class Flatten:
     def __call__(self,x:Tensor):
